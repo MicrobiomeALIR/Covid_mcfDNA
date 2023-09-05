@@ -1,0 +1,759 @@
+---
+title: "Lisius_mcfDNA_9.5.23"
+author: "GK"
+date: "09/05/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r - libraries}
+# LOAD IMPORTANT LIBRARIES
+# load important libraries
+library(dplyr)
+library(readxl)
+library(plyr)
+library(ggplot2)
+library(psych)
+library(lubridate)
+library(stargazer)
+library(reshape2)
+library(ggbeeswarm)
+library(epitools)
+library(vegan)
+library(tidyr)
+library(gdata)
+library(stringr)
+library(ggpubr)
+library(mice)
+library(networkD3)
+library(data.table)
+library(readr)
+library("Partiallyoverlapping")
+library("ggsignif")
+library("permute")
+library("haven")
+library(ggcorrplot)
+library(tableone)
+
+library(nlme)
+
+
+library(purrr)
+
+library(openxlsx)
+
+library("survival")
+library("survminer")
+
+
+```
+
+```{r - import dataframes}
+getwd()
+karius_covid_df <- read.csv("karius_covid_df.csv")
+CovidRappidseq <- read.csv("CovidRappidseq.csv")
+
+```
+
+
+
+```{r - Descriptive analysis on Karius run outputs}
+
+names(karius_covid_df)
+n_distinct(karius_covid_df$SubjectID) # 42
+n_distinct(karius_covid_df$SubjectIDDay) # 82
+
+#### compare human MPMs between successful and failed samples. 
+karius_covid_df$Karius_status <- ordered(karius_covid_df$Karius_status, levels= c("Pass", "Pass Qualitatively", "Fail"))
+table(karius_covid_df$Karius_status) 
+ggplot(karius_covid_df, aes(x=Karius_status, y = log(Karius_human_mpms)))  + geom_boxplot() + geom_point() + stat_compare_means()
+
+###### figure for all samples. 
+my_comparisons <- list( c("Pass", "Pass Qualitatively"), c("Pass", "Fail"))
+
+#### export figure for all samples. 
+human_mpms_passfail_all <- karius_covid_df %>% ggboxplot( x = "Karius_status", y = "Karius_human_mpms",
+                color = "Karius_status", palette =c("seagreen", "sienna4", "red"),
+                add = "dotplot", size = 0.5, yscale = "log10", xlab = "Sequencing Success", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+ggsave('human_mpms_passfail_all.jpeg', units="in", width=6,height=5)
+
+### baseline samples. 
+karius_covid_df %>% filter(Visit_Day==1) %>% ggboxplot( x = "Karius_status", y = "Karius_human_mpms",
+                color = "Karius_status", palette =c("seagreen", "sienna4", "red"),
+                add = "dotplot", shape = "Karius_status", size = 0.5, yscale = "log10", xlab = "Sequencing Success", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+ggsave('human_mpms_passfail_baseline.jpeg', units="in", width=5,height=4)
+
+
+### with the tabulation of pass/fail samples by Karius, it seems that some cases failed throughout. 
+### examine samples with >1 sample per subject. 
+
+karius_covid_SubjectsIDs_Morethan1sample <- karius_covid_df$SubjectID[karius_covid_df$Visit_Day=="5"]
+karius_covid_SubjectsMorethan1sample <-   karius_covid_df %>% filter(SubjectID %in% karius_covid_SubjectsIDs_Morethan1sample)
+n_distinct(karius_covid_SubjectsMorethan1sample$SubjectID) # 22 subjects with >1 sample
+karius_covid_SubjectsMorethan1sample <- mutate(karius_covid_SubjectsMorethan1sample, karius_status_binary = ifelse(Karius_status=="Pass", 1, 0))
+summary(glm(karius_status_binary ~ SubjectID, data = karius_covid_SubjectsMorethan1sample, family = "binomial" ))
+
+### examine human MPMs by subject. 
+summary(lm(log(Karius_human_mpms) ~ SubjectID + Visit_Day, data = karius_covid_SubjectsMorethan1sample ))
+karius_covid_SubjectsMorethan1sample  %>% ggplot(aes(x = as.factor(Visit_Day), y = log(Karius_human_mpms))) + geom_beeswarm() + geom_boxplot() + stat_compare_means() + geom_line(aes(group=karius_covid_SubjectsMorethan1sample$SubjectID), colour = "black", linetype="dashed", size = 0.1)
+
+# take D1 and D5 samples. 
+karius_covid_SubjectsMorethan1sampleD1_D5 <- filter(karius_covid_SubjectsMorethan1sample, Visit_Day <10)
+summary(glm(karius_status_binary ~ SubjectID, data = karius_covid_SubjectsMorethan1sampleD1_D5, family = "binomial" ))
+karius_covid_SubjectsMorethan1sampleD1_D5  %>% ggplot(aes(x = as.factor(Visit_Day), y = log(Karius_human_mpms), color = as.factor(karius_status_binary))) + geom_beeswarm() + geom_boxplot() + stat_compare_means() + geom_line(aes(group=karius_covid_SubjectsMorethan1sampleD1_D5$SubjectID), colour = "black", linetype="dashed", size = 0.1)
+
+### convert from long to wide for case-based comparisons. 
+karius_covid_SubjectsMorethan1sampleD1_D5_wide <- subset(karius_covid_SubjectsMorethan1sampleD1_D5, select = c(SubjectID, Visit_Day, karius_status_binary ))
+karius_covid_SubjectsMorethan1sampleD1_D5_wide <- spread(karius_covid_SubjectsMorethan1sampleD1_D5_wide, Visit_Day, karius_status_binary)
+
+### examine odds ratio for failed/pass. 
+oddsratio.fisher(karius_covid_SubjectsMorethan1sampleD1_D5_wide$`1`, karius_covid_SubjectsMorethan1sampleD1_D5_wide$`5`) # significant. from this comparison we conclude that the chances of non-pass sample on day 5 were higher if the baseline sample had also failed. 
+table(karius_covid_SubjectsMorethan1sampleD1_D5_wide$`1`, karius_covid_SubjectsMorethan1sampleD1_D5_wide$`5`)
+
+##### examine via a paired test whether the pass samples on both days differed by human mpms vs. those with pass/nonpass. 
+### iterative analysis with same df
+karius_covid_SubjectsMorethan1sampleD1_D5_wide$bothSamples <- karius_covid_SubjectsMorethan1sampleD1_D5_wide$`1` + karius_covid_SubjectsMorethan1sampleD1_D5_wide$`5`
+
+karius_covid_SubjectsMorethan1sampleD1_D5 <- merge(karius_covid_SubjectsMorethan1sampleD1_D5, karius_covid_SubjectsMorethan1sampleD1_D5_wide, by = "SubjectID", all.x = TRUE)
+
+karius_covid_SubjectsMorethan1sampleD1_D5 %>% filter(!is.na(bothSamples))  %>% ggplot(aes(x = as.factor(Visit_Day), y = log(Karius_human_mpms))) + geom_beeswarm() + geom_boxplot() + stat_compare_means() + facet_wrap(~ bothSamples)
+
+karius_covid_SubjectsMorethan1sampleD1_D5 %>% filter(!is.na(bothSamples))  %>% ggplot(aes(x = as.factor(bothSamples), y = log(Karius_human_mpms))) + geom_boxplot() + geom_beeswarm()  + stat_compare_means() 
+
+
+
+my_comparisons <- list( c("0", "1"), c("0", "2"), c("1", "2"))
+karius_covid_SubjectsMorethan1sampleD1_D5 %>% filter(!is.na(bothSamples)) %>% ggboxplot( x = "bothSamples", y = "Karius_human_mpms",
+                color = "bothSamples", palette =c("red", "sienna4", "green"),
+                add = "dotplot", size = 0.8, yscale = "log10", xlab = "", ylab = "HcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+###### export figure for those samples that failed or passed in two consecutive samples day 1 and day 5
+
+ human_mpms_passfail_D1D5_matched <- karius_covid_SubjectsMorethan1sampleD1_D5 %>% filter(!is.na(bothSamples)) %>% ggboxplot( x = "bothSamples", y = "Karius_human_mpms", color = "bothSamples", palette =c("red", "sienna4", "seagreen"), add = "dotplot", size = 0.5, yscale = "log10", xlab = "Sequencing Success in Follow-up Samples (D1 and D5)", ylab = "", legend = "none") +  stat_compare_means(comparisons = my_comparisons)
+ggsave('human_mpms_passfail_D1D5_matched.jpeg', units="in", width=6,height=5)
+
+HumanMPMsPassFailD1D5Matched <-ggarrange(human_mpms_passfail_all, human_mpms_passfail_D1D5_matched, ncol = 2, nrow = 1)
+ggsave("HumanMPMsPassFailD1D5Matched.jpeg", width = 12, height =8)
+
+#### pass samples had markedly lower levels of human DNA. 
+#### quantitative analyses will focus on these pass samples (qualitatively pass can be used for organismal identification but not for strict MPM comparisons)
+karius_covid_df$pneum_category <- ordered(karius_covid_df$pneum_category, levels= c("MDSI", "CDSI", "NCSI"))
+
+### convert 0s to 1s to allow log transformations
+karius_covid_df$total_microbial[karius_covid_df$total_microbial==0] <- 1
+karius_covid_df$pathogen_MPM[karius_covid_df$pathogen_MPM==0] <- 1
+karius_covid_df$bacterial_MPM[karius_covid_df$bacterial_MPM==0] <- 1
+karius_covid_df$fungal_MPM[karius_covid_df$fungal_MPM==0] <- 1
+
+
+```
+
+
+```{r clinical metadata}
+
+###### Table 1 comparisons. 
+table(karius_covid_df$COVID) # 82 covid samples. 
+
+### Improve nomenclature of secondary infections. 
+
+karius_covid_df <- karius_covid_df %>% mutate(SIgroup = case_when(pneum_category=="MDSI" ~ "Micro-SI", 
+       pneum_category=="CDSI"  ~ "Clinical-SI" ,
+        pneum_category=="NCSI"  ~ "No-Suspected-SI" ))
+table(karius_covid_df$SIgroup)
+
+#### obtain subjectid dataframe. 
+karius_covid_df_subjectid <- karius_covid_df %>% group_by(SubjectID) %>% filter(Visit_Day==min(Visit_Day)) # 42 subjects. 
+
+#### define descriptive variables for Table 1 analyses
+vars_continuous <- c("Age","BMI","VFD","survival_time_fromICUAdmission", "survival_time90_fromICUAdmission",  "WBC", "Temperature", "WHO_ICUAdmission","WHO_Intubation", "WHO_HospAdmission", "ralescore", "viraloadPlasma", "viraloadETA", "qpcr16S_eta", "il6", "il8", "il10", "ang2", "procalcitonin", "st2", "fractalkine",  "pentraxin3", "rage", "tnfr1", "spd",  "total_microbial",  "Karius_human_mpms", "pathogen_MPM", "fungal_MPM", "bacterial_MPM")
+                     
+vars_categorical <- c("Gender", "Race" ,"HistDiabetes","HistCOPD", "HistImmunosuppression", "Mortality30Day","Mortality90Day","intubated", "ECMO",   "Karius_status", "SIgroup", "phenotype", "SinhaPhenotype" )
+
+################
+##### BASIC DEMOGRAPHICS
+################
+
+cat_table_kariuscovid_all <- print(CreateCatTable(vars = vars_categorical, data=karius_covid_df_subjectid, test = FALSE))
+con_table_kariuscovid_all <- print(CreateContTable(vars = vars_continuous, data=karius_covid_df_subjectid), nonnormal = vars_continuous, digits  = 1)
+
+write.csv(cat_table_kariuscovid_all, "cat_table_kariuscovid_all.csv")
+write.csv(con_table_kariuscovid_all, "con_table_kariuscovid_all.csv")
+
+######### 
+
+########### breakdown by SI categories. at baseline
+table(karius_covid_df_subjectid$SIgroup) 
+
+cat_table_SIgroup <- print(CreateCatTable(vars = vars_categorical, strata = "SIgroup" , data=karius_covid_df_subjectid, test = TRUE, testExact = fisher.test, includeNA = FALSE), pDigits = 2)
+con_table_SIgroup <- print(CreateContTable(vars = vars_continuous, strata = "SIgroup" , data=karius_covid_df_subjectid), nonnormal = vars_continuous, digits  = 1, pDigits = 2)
+
+write.csv(cat_table_SIgroup, "cat_table_SIgroup.csv")
+write.csv(con_table_SIgroup, "con_table_SIgroup.csv")
+
+
+
+###### breakdown by karius_status for baseline samples. 
+cat_table_kariustatusbaseline <- print(CreateCatTable(vars = vars_categorical, strata = "Karius_status" , data=karius_covid_df_subjectid, test = TRUE, testExact = fisher.test, includeNA = FALSE), pDigits = 2)
+con_table_kariustatusbaseline <- print(CreateContTable(vars = vars_continuous, strata = "Karius_status" , data=karius_covid_df_subjectid), nonnormal = vars_continuous, digits  = 1, pDigits = 2)
+
+write.csv(cat_table_kariustatusbaseline, "cat_table_kariustatusbaseline.csv")
+write.csv(con_table_kariustatusbaseline, "con_table_kariustatusbaseline.csv")
+
+fisher.test(as.factor(karius_covid_df_subjectid$Karius_status=="Fail"), karius_covid_df_subjectid$ECMO) # clear trend but small N again.
+
+
+########### perform specific comparisons of human and mcfDNA between SI groups only in covid subjects. 
+
+
+karius_covid_df_subjectid$SIgroup <- ordered(karius_covid_df_subjectid$SIgroup, levels= c("Micro-SI", "Clinical-SI", "No-Suspected-SI"))
+
+
+ggboxplot(karius_covid_df_subjectid, x = "SIgroup", y = "Karius_human_mpms",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "jitter", size = 0.8, yscale = "log10", xlab = "", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means()
+
+# export figure. 
+my_comparisons <- list( c("Micro-SI", "Clinical-SI"), c("Micro-SI", "No-Suspected-SI"), c("Clinical-SI", "No-Suspected-SI"))
+human_mpms_clinicalgroups <- ggboxplot(karius_covid_df_subjectid, x = "SIgroup", y = "Karius_human_mpms",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+ggsave('human_mpms_clinicalgroups.jpeg', units="in", width=5,height=4)
+
+
+#### compare microbial load among pass samples. 
+
+# no significant differences by total microbial load. 
+mcfdna_mpms_clinicalgroups <- karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "SIgroup", y = "total_microbial",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot", size = 0.8, yscale = "log10",  xlab = "", ylab = "total mcfDNA - MPMs (log)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+ggsave('mcfdna_mpms_clinicalgroups.jpeg', units="in", width=5,height=4)
+
+# no significant difference by pathogen_MPM
+pathogen_mpms_pneumcategory <- karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "SIgroup", y = "pathogen_MPM",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "Pathogen mcfDNA - MPMs (log)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+ggsave('pathogen_mpms_pneumcategory.jpeg', units="in", width=5,height=4)
+
+#### annotate important bugs in the pathogen graph. 
+karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggplot(aes(x=SIgroup, y = pathogen_MPM)) + geom_boxplot() + geom_jitter() + geom_text(aes(label = SubjectID)) + scale_y_log10()
+ggsave("annotatedsubjectIDspathogenMPM.jpeg")
+
+pathogen_mpms_pneumcategory_annotated <- karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "SIgroup", y = "pathogen_MPM",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "Pathogen mcfDNA - MPMs (log)", legend = "none") +   stat_compare_means(comparisons = my_comparisons) + 
+annotate(geom="text", x=1.3, y=32204.60332, label="Proteus Mirabilis", size=2,fontface="italic", color="red") +
+ annotate(geom="text", x=1.1, y=13000, label="E.coli", size=2, fontface="italic", color="red")+
+  annotate(geom="text", x=1.2, y=1000, label="Ps.aeruginosa", size=2, fontface="italic", color="red") +
+  annotate(geom="text", x=1.3, y=283.521408, label="E.faecalis/E.coli", size=2, fontface="italic", color="red") +
+   annotate(geom="text", x=2.4, y=33000.708000, label="K.Pneumoniae/Ps.aeruginosa", size=2, fontface="italic", color="black") +
+    annotate(geom="text", x=2.5, y=4000, label="K.pneumoniae/Haemophilus/E.coli", size=2, fontface="italic", color="blue") +
+    annotate(geom="text", x=2.6, y=1480, label="Raoultella ornitholytica", size=2, fontface="italic", color="blue") +
+    annotate(geom="text", x=2.5, y=1050, label="Streptococcus/Actinomyces", size=2, fontface="italic", color="blue") +
+     annotate(geom="text", x=3.3, y=1050, label="KP/S.aureus/H.flu", size=2, fontface="italic", color="blue") + 
+  annotate(geom="text", x=2.6, y=250, label="Streptococcus/Actinomyces", size=2, fontface="italic", color="blue")
+  ggsave('pathogen_mpms_pneumcategory_annotated.jpeg', units="in", width=5,height=4)
+
+
+
+#########
+#########
+# Fig2
+Fig2 <- ggarrange(human_mpms_clinicalgroups, mcfdna_mpms_clinicalgroups, pathogen_mpms_pneumcategory_annotated, ncol = 3, nrow = 1)
+ggsave("Fig2.jpeg", units = "in", width = 15, height = 6)
+
+###### alternative set for Fig2
+Fig2longab <-  ggarrange(human_mpms_clinicalgroups, mcfdna_mpms_clinicalgroups,  ncol = 2, nrow = 1)
+Fig2longc <-  ggarrange(pathogen_mpms_pneumcategory_annotated, ncol = 1, nrow = 1)
+Fig2long <- ggarrange(Fig2longab, Fig2longc, ncol = 1, nrow = 2)
+ggsave("Fig2long.jpeg", units = "in", width = 10, height = 10)
+
+
+
+################### compare with historic noncovid pneumonia mcfDNA. 
+
+CovidRappidseq$total_microbial[CovidRappidseq$total_microbial==0] <-1
+CovidRappidseq$pathogen_MPM[CovidRappidseq$pathogen_MPM==0] <-1
+
+
+CovidRappidseq$SIgroup <- ordered(CovidRappidseq$SIgroup, levels = c("Micro-SI", "Clinical-SI", "No-Suspected-SI", "MCP", "CDP", "Controls"))
+
+my_comparisons = list(c("No-Suspected-SI", "MCP"), c("No-Suspected-SI", "CDP"), c("No-Suspected-SI", "Controls"))
+
+# hcfdna
+human_mpms_CovidRappidseq <- ggboxplot(CovidRappidseq, x = "SIgroup", y = "Karius_human_mpms",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue", "purple", "orange", "seagreen4"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+ggsave('human_mpms_CovidRappidseq.jpeg', units="in", width=10,height=5)
+
+# total mcfDNA
+totalmcfdna_mpms_CovidRappidseq <- ggboxplot(CovidRappidseq, x = "SIgroup", y = "total_microbial",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue", "purple", "orange", "seagreen4"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "total mcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+ggsave('totalmcfdna_mpms_CovidRappidseq.jpeg', units="in", width=10,height=5)
+
+# pathogen mcfDNA
+pathogenmcfdna_mpms_CovidRappidseq <- ggboxplot(CovidRappidseq, x = "SIgroup", y = "pathogen_MPM",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue", "purple", "orange", "seagreen4"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "Pathogen mcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+ggsave('pathogenmcfdna_mpms_CovidRappidseq.jpeg', units="in", width=10,height=5)
+
+covidvsrappidseq_cfDNA <- ggarrange(human_mpms_CovidRappidseq, totalmcfdna_mpms_CovidRappidseq, pathogenmcfdna_mpms_CovidRappidseq, ncol = 1, nrow = 3)
+ggsave("covidvsrappidseq_cfDNA.jpeg", units = "in", width = 10, height = 15)
+
+
+######### trajectory by SI categories. comparisons at each time point. 
+karius_covid_df$Visit_Day[karius_covid_df$Visit_Day==6] <-5
+karius_covid_df$Visit_Day[karius_covid_df$Visit_Day==11] <-10
+
+my_comparisons <- list( c("Micro-SI", "Clinical-SI"), c("Micro-SI", "No-Suspected-SI"), c("Clinical-SI", "No-Suspected-SI"))
+
+karius_covid_df$SIgroup <- ordered(karius_covid_df$SIgroup, levels = c("Micro-SI", "Clinical-SI", "No-Suspected-SI"))
+
+human_mpms_day1 <- karius_covid_df %>% filter(Karius_status=="Pass") %>% filter(Visit_Day==1) %>% ggboxplot(x = "SIgroup", y = "Karius_human_mpms",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+human_mpms_day5 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==5) %>% ggboxplot(x = "SIgroup", y = "Karius_human_mpms",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+human_mpms_day10 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==10) %>% ggboxplot(x = "SIgroup", y = "Karius_human_mpms",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+
+totalmcfdna_mpms_day1 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==1) %>% ggboxplot(x = "SIgroup", y = "total_microbial",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "total mcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+totalmcfdna_mpms_day5 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==5) %>% ggboxplot(x = "SIgroup", y = "total_microbial",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+totalmcfdna_mpms_day10 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==10) %>% ggboxplot(x = "SIgroup", y = "total_microbial",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+pathogenmcfdna_mpms_day1 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==1) %>% ggboxplot(x = "SIgroup", y = "pathogen_MPM",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "pathogen mcfDNA - MPMs (log)", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+pathogenmcfdna_mpms_day5 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==5) %>% ggboxplot(x = "SIgroup", y = "pathogen_MPM",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+pathogenmcfdna_mpms_day10 <- karius_covid_df %>% filter(Karius_status=="Pass") %>%filter(Visit_Day==10) %>% ggboxplot(x = "SIgroup", y = "pathogen_MPM",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "", legend = "none") + stat_compare_means(comparisons = my_comparisons)
+
+efigCFDNA_byDay <- ggarrange(human_mpms_day1, human_mpms_day5, human_mpms_day10, totalmcfdna_mpms_day1, totalmcfdna_mpms_day5, totalmcfdna_mpms_day10, pathogenmcfdna_mpms_day1, pathogenmcfdna_mpms_day5, pathogenmcfdna_mpms_day10, nrow = 3, ncol = 3)
+ggsave("efigCFDNA_byDay.jpeg", units = "in", width = 14, height = 12)
+
+
+#### correlation between microbial and human reads
+correlation_hcdfna_mcfdna <- karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggscatter( x = "Karius_human_mpms", y = "total_microbial", shape = 21, size = 3, add = "reg.line", yscale = "log10", xscale="log10", add.params = list(fill = "lightgray"),  conf.int = TRUE,  cor.coef = TRUE,    cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n"), ylab = "total mcfDNA - MPMs (log)" , xlab = "hcfDNA - MPMs (log)")
+ggsave('correlation_hcdfna_mcfdna.jpeg', units="in", width=5,height=4)
+
+
+############
+###### examine correlations between cfdna mpms and biomarkers
+##### need to focus on pass samples for quantitative analyses
+karius_covid_df_subjectid_biomarkers <- filter(karius_covid_df_subjectid,Karius_status=="Pass" )
+karius_covid_df_subjectid_biomarkers <- subset(karius_covid_df_subjectid, select = c(WBC, il6, il8, procalcitonin, st2, rage, ang2, pentraxin3, tnfr1,  spd, qpcr16S_eta, viraloadETA, viraloadPlasma,  Karius_human_mpms, total_microbial, pathogen_MPM ))
+
+oldnames = c( "WBC",  "il6", "il8", "procalcitonin", "st2", "rage",  "ang2",  "pentraxin3",  "tnfr1",  "spd",  "qpcr16S_eta",  "viraloadETA", "viraloadPlasma", "Karius_human_mpms", "total_microbial", "pathogen_MPM")
+
+newnames = c("WBC",  "IL6", "IL8", "Procalcitonin", "ST2", "RAGE", "Ang-2",   "Pentraxin-3", "TNFR1",  "SPD", "16S_QPCR_ETA",   "SARSCOV2_ETA", "SARSCOV2_Plasma",  "hcfDNA",  "total_mcfDNA", "pathogen_mcfDNA")
+
+
+karius_covid_df_subjectid_biomarkers <- karius_covid_df_subjectid_biomarkers %>% rename_at(vars(oldnames), ~ newnames)
+
+
+
+# https://stackoverflow.com/questions/15215848/apply-function-to-every-value-in-an-r-dataframe
+karius_covid_df_subjectid_biomarkers_log <- log(karius_covid_df_subjectid_biomarkers[, 1:16] + 1)
+
+# compute correlation mattrix
+corrlog <- round(cor(karius_covid_df_subjectid_biomarkers_log, use = "pairwise.complete.obs"), 2)
+p.matlog <- cor_pmat(karius_covid_df_subjectid_biomarkers_log)
+
+## adjust # make matrix dataframe and then convert back to matrix
+p.mat_df <- as.data.frame(p.matlog)
+p.mat_df <-apply(p.mat_df,2, p.adjust, method = "BH")
+
+
+# adjusted for multiple comparisons
+ggcorrplot(corrlog, method = "circle", hc.order = FALSE, type = "lower", p.mat = p.mat_df)
+
+### export figure for supplement
+karius_correlogram_all <- ggcorrplot(corrlog,  colors = c("#6D9EC1", "white", "#E46726"), lab = FALSE, hc.order = FALSE, type = "lower", insig = "blank", p.mat = p.mat_df)
+ggsave('karius_correlogram_all.jpeg', units="in", width=6,height=6)
+
+
+
+####### Examine plasma biomarkers by each SI category
+il6bySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "il6",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "IL-6 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+il8bySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "il8",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "IL-8 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+st2bySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "st2",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "ST2 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+tnfr1bySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "tnfr1",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "sTNFR1 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+SPDbySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "spd",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "SPD (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+ragebySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "rage",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "sRAGE(pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+ang2bySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "ang2",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "Ang-2 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+procalcitoninbySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "procalcitonin",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "Procalcitonin (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+pentraxin3bySI <- karius_covid_df_subjectid %>% ggboxplot(x = "SIgroup", y = "pentraxin3",
+                color = "SIgroup", palette =c("red4", "lightsteelblue4", "midnightblue"),
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "", ylab = "Pentraxin-3 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+biomarkersbySI <- ggarrange(il6bySI, il8bySI, st2bySI, tnfr1bySI, SPDbySI, ragebySI ,ang2bySI, procalcitoninbySI, pentraxin3bySI, ncol = 3, nrow = 3)
+ggsave("biomarkersbySI.jpeg", width = 16, height = 14)
+
+
+##### graphs of WHO by biomarkers
+# patients never admitted to ICU have low WHO score (5)
+karius_covid_df_subjectid$WHO_ICUAdmission[is.na(karius_covid_df_subjectid$WHO_ICUAdmission)] <- 5
+
+### 
+
+il6WHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = il6)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma IL-6 levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+il8WHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = il8)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma IL-8 levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+st2WHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = st2)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma sST2 levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+tnfr1WHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = tnfr1)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma sTNFR1 levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+SPDWHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = spd)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma SPD levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+rageWHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = rage)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma sRAGE levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+ang2WHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = ang2)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma Ang-2 levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+procalcitoninWHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = procalcitonin)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma procalcitonin levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+pentraxin3WHO <- karius_covid_df_subjectid    %>% ggplot(aes(x=as.factor(WHO_ICUAdmission), y = pentraxin3)) + geom_boxplot() + geom_beeswarm(size=1) + scale_y_log10() + theme_pubr() + theme(legend.position = "none")  + ylab("plasma Pentraxin-3 levels (pg/ml)") + xlab("WHO Scale on Admission") + stat_compare_means() 
+
+biomarkersbyWHO <- ggarrange(il6WHO, il8WHO, st2WHO, tnfr1WHO, SPDWHO, rageWHO ,ang2WHO, procalcitoninWHO, pentraxin3WHO, ncol = 3, nrow = 3)
+ggsave("biomarkersbyWHO.jpeg", width = 20, height = 14)
+
+
+#### Examine biomarkers by intubated vs ecmo
+### respiratory support. 
+karius_covid_df_subjectid <- karius_covid_df_subjectid %>% mutate(RespSupport = case_when(ECMO=="ECMO" ~ "ECMO", 
+                                                                                            intubated =="no" ~ "Non-Invasive", 
+                                                                                            intubated=="yes" & ECMO=="Not_ECMO" ~ "IMV"))
+karius_covid_df_subjectid$RespSupport <-ordered(karius_covid_df_subjectid$RespSupport, levels = c("ECMO", "IMV", "Non-Invasive"))
+
+
+my_comparisons <- list(c("ECMO", "IMV"), c("ECMO", "Non-Invasive"), c("IMV", "Non-Invasive"))
+il6byRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "il6",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "IL-6 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+il8byRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "il8",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "IL-8 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+st2byRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "st2",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "ST2 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+tnfr1byRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "tnfr1",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "sTNFR1 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+SPDbyRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "spd",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "SPD (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+ragebyRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "rage",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "sRAGE(pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+ang2byRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "ang2",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "Ang-2 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+procalcitoninbyRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "procalcitonin",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "Procalcitonin (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+pentraxin3byRespSupport <- karius_covid_df_subjectid %>% ggboxplot(x = "RespSupport", y = "pentraxin3",
+                color = "RespSupport", palette =c("red4", "orange", "purple"),
+                add = "dotplot",  RespSupportze = 0.8, yscale = "log10", xlab = "", ylab = "Pentraxin-3 (pg/ml)", legend = "none") +   stat_compare_means(comparisons = my_comparisons)
+
+biomarkersbyRespSupport <- ggarrange(il6byRespSupport, il8byRespSupport, st2byRespSupport, tnfr1byRespSupport, SPDbyRespSupport, ragebyRespSupport ,ang2byRespSupport, procalcitoninbyRespSupport, pentraxin3byRespSupport, ncol = 3, nrow = 3)
+ggsave("biomarkersbyRespSupport.jpeg", width = 16, height = 14)
+
+
+
+
+
+### look at ecmo association with sequencing failure
+
+table(karius_covid_df$ECMO)
+fisher.test(karius_covid_df$ECMO, karius_covid_df$Karius_status)
+
+my_comparisons <- list(c("Pass", "Pass Qualitatively"), c("Pass", "Fail"), c("Pass Qualitatively", "Fail"))
+karius_covid_df %>% ggboxplot(x = "Karius_status", y = "Karius_human_mpms",
+                color = "Karius_status",  palette =c("seagreen", "sienna4", "red"), add = "dotplot",  size = 0.8, yscale = "log10", xlab = "Sequencing Success", ylab = "HcfDNA MPMs", legend = "none") + stat_compare_means(comparisons = my_comparisons) + facet_wrap(~ECMO)
+ggsave("PassFailbyECMO_hcfDNA.jpeg", width = 12, height = 8)
+
+prop.table(table(karius_covid_df$ECMO, karius_covid_df$Karius_status))
+table(karius_covid_df$ECMO, karius_covid_df$Karius_status)
+oddsratio.small(karius_covid_df$ECMO, karius_covid_df$Karius_status)
+
+
+
+#### for the significant biomarkers, look at correlations between mcfDNA and vRNA in regression models (to adjust for effects of viral load on the examined associations)
+
+model <- lm(log10(il6) ~ log10(viraloadPlasma) + log10(total_microbial), data = karius_covid_df_subjectid)
+summary(model)
+
+model <- lm(log10(il8) ~ log10(viraloadPlasma) + log10(total_microbial), data = karius_covid_df_subjectid)
+summary(model)
+
+model <- lm(log10(spd) ~ log10(viraloadPlasma) + log10(total_microbial), data = karius_covid_df_subjectid)
+summary(model)
+
+model <- lm(log10(ang2) ~ log10(viraloadPlasma) + log10(total_microbial), data = karius_covid_df_subjectid)
+summary(model)
+
+
+### hcfdna
+model <- lm(log10(il6) ~ log10(viraloadPlasma) + log10(Karius_human_mpms), data = karius_covid_df_subjectid)
+summary(model)
+
+model <- lm(log10(il8) ~ log10(viraloadPlasma) + log10(Karius_human_mpms), data = karius_covid_df_subjectid)
+summary(model)
+
+model <- lm(log10(procalcitonin) ~ log10(viraloadPlasma) + log10(Karius_human_mpms), data = karius_covid_df_subjectid)
+summary(model)
+
+model <- lm(log10(pentraxin3) ~ log10(viraloadPlasma) + log10(Karius_human_mpms), data = karius_covid_df_subjectid)
+summary(model)
+
+
+#### graph for SPD and mcfDNA. 
+spdmcfdna <- karius_covid_df_subjectid  %>% ggscatter(x = "total_microbial", y = "spd",  add = "reg.line", conf.int = FALSE, palette = "Set1", size = 1.5, add.params= list(linetype="dashed")) +  stat_cor(label.x = 1) + yscale("log10")  + xscale("log10") + ggtitle("SPD correlates with mcfDNA") + xlab("total mcfDNA (MPM)") + ylab("plasma SPD (pg/ml)")
+
+spdvRNA <- karius_covid_df_subjectid  %>% ggscatter(x = "viraloadPlasma", y = "spd",  add = "reg.line", conf.int = FALSE, palette = "Set1", size = 1.5, add.params= list(linetype="dashed")) +  stat_cor(label.x = 1) + yscale("log10")  + xscale("log10") + ggtitle("SPD does not correlate with SARS-CoV-2 RNA") + xlab("plasma vRNA (copies/ml)") + ylab("plasma SPD (pg/ml)")
+
+spdCorrelationsCovid <- ggarrange(spdmcfdna, spdvRNA, ncol = 2)
+ggsave("spdCorrelationsCovid.jpeg", width = 12, height = 6)
+
+ karius_covid_df_subjectid  %>% ggscatter(x = "ralescore", y = "spd",  add = "reg.line", conf.int = FALSE, palette = "Set1", size = 1.5, add.params= list(linetype="dashed")) +  stat_cor(label.x = 1) + yscale("log10")
+  karius_covid_df_subjectid  %>% ggscatter(x = "rage", y = "spd",  add = "reg.line", conf.int = FALSE, palette = "Set1", size = 1.5, add.params= list(linetype="dashed")) +  stat_cor(label.x = 1) + yscale("log10")  + xscale("log10")
+    karius_covid_df_subjectid  %>% ggscatter(x = "ang2", y = "spd",  add = "reg.line", conf.int = FALSE, palette = "Set1", size = 1.5, add.params= list(linetype="dashed")) +  stat_cor(label.x = 1) + yscale("log10")  + xscale("log10")
+```
+
+```{r survival analyses}
+
+
+######### examine differences in survival  by pneum_category - use the subjectid file as first available in each subject. 
+   survival_fit_bygroup90 <- survfit(Surv(survival_time90_fromICUAdmission, survival_status90)~SIgroup, data=karius_covid_df_subjectid)
+summary(survival_fit_bygroup90)  # no significant difference
+ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "Kaplan-Meier Curve within 90 days")   
+
+###### examine differnce in survival by pass/fail
+   survival_fit_bygroup90 <- survfit(Surv(survival_time90_fromICUAdmission, survival_status90)~Karius_status, data=karius_covid_df_subjectid)
+summary(survival_fit_bygroup90) # qualitatively pass appear numerically worse, although p rank not significant. 
+ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "Kaplan-Meier Curve within 90 days") 
+
+# mortality by total microbial and pathogen MPM baseline in pass samples. - no differences in the large dataset, trend for difference in 90 d mortality
+
+karius_covid_df_subjectid  %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "Mortality90Day", y = "total_microbial",
+                color = "Mortality90Day",
+                add = "jitter", shape = "Mortality90Day", size = 0.5, yscale = "log10") + stat_compare_means()
+
+karius_covid_df_subjectid  %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "Mortality90Day", y = "total_microbial",
+                color = "Mortality90Day",
+                add = "jitter", shape = "Mortality90Day", size = 0.5, yscale = "log10") + stat_compare_means()
+
+karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "Mortality90Day", y = "pathogen_MPM",
+                color = "Mortality90Day",
+                add = "jitter", shape = "Mortality90Day", size = 0.5, yscale = "log10") + stat_compare_means()
+
+karius_covid_df_subjectid   %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "Mortality90Day", y = "pathogen_MPM",
+                color = "Mortality90Day",
+                add = "jitter", shape = "Mortality90Day", size = 0.5, yscale = "log10") + stat_compare_means()
+
+
+karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "Mortality90Day", y = "Karius_human_mpms",
+                color = "Mortality90Day",
+                add = "jitter", shape = "Mortality90Day", size = 0.5, yscale = "log10") + stat_compare_means()
+
+
+### significant correlation with rale score for hcfdna
+ggscatter(karius_covid_df, x = "ralescore", y = "Karius_human_mpms", shape = 21, size = 3, add = "reg.line", yscale = "log10",  add.params = list(fill = "lightgray"),  conf.int = TRUE,  cor.coef = TRUE,    cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")) 
+
+ggscatter(karius_covid_df, x = "ralescore", y = "total_microbial", shape = 21, size = 3, add = "reg.line", yscale = "log10",  add.params = list(fill = "lightgray"),  conf.int = TRUE,  cor.coef = TRUE,    cor.coeff.args = list(method = "pearson", label.x = 3, label.sep = "\n")) 
+
+### No difference by WHO status on ICU admission
+karius_covid_df_subjectid %>%  filter(Karius_status=="Pass") %>% ggboxplot(x = "WHO_ICUAdmission", y = "Karius_human_mpms",
+                color = "WHO_ICUAdmission",
+                add = "jitter", shape = "WHO_ICUAdmission", size = 0.5, yscale = "log10") + stat_compare_means() # no differnce by
+karius_covid_df_subjectid %>% filter(Karius_status=="Pass") %>% ggboxplot(x = "WHO_ICUAdmission", y = "total_microbial",
+                color = "WHO_ICUAdmission",
+                add = "jitter", shape = "WHO_ICUAdmission", size = 0.5, yscale = "log10") + stat_compare_means() # no differnce by
+
+
+### Survival analyses. 
+### Cox models for total and pathogen cfDNA adjusted for Age. 
+##### look at at total microbial quartiles and survival and cox model for mpms. 
+survival_coxph_bygroup90 <- coxph(Surv(survival_time90_fromICUAdmission, survival_status90)~log10(total_microbial) + Age , data=karius_covid_df_subjectid)
+summary(survival_coxph_bygroup90) # p=0.0298
+survival_coxph_bygroup90 <- coxph(Surv(survival_time90_fromICUAdmission, survival_status90)~log10(pathogen_MPM) , data=karius_covid_df_subjectid)
+summary(survival_coxph_bygroup90) # p=0.08
+
+######## interaction by SI
+
+survival_coxph_bygroup90 <- coxph(Surv(survival_time90_fromICUAdmission, survival_status90)~log10(total_microbial) + Age + SIgroup + SIgroup*log10(total_microbial), data=karius_covid_df_subjectid)
+summary(survival_coxph_bygroup90) # p=0.006  for total mcfdna - interaction terms not significant 
+
+survival_coxph_bygroup90 <- coxph(Surv(survival_time90_fromICUAdmission, survival_status90)~log(pathogen_MPM) + SIgroup + SIgroup*log(pathogen_MPM), data=karius_covid_df_subjectid)
+summary(survival_coxph_bygroup90) # p=0.06  ##### 
+
+
+##### 90 d mortality figure. 
+mort90d_covidmcfdna <- karius_covid_df_subjectid  %>% filter(Karius_status=="Pass") %>% ggboxplot(x ="Mortality90Day", y = "total_microbial",
+                color = "Mortality90Day", palette =c("magenta4", "black"), 
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "90-day Mortality", ylab = "total mcfDNA - MPMs (log)", legend = "none") + stat_compare_means()
+ggsave("mort90d_covidmcfdna.jpeg", width = 4, height = 5)
+
+mort90d_covidmcfdna_pathogen <- karius_covid_df_subjectid  %>% filter(Karius_status=="Pass")%>%  ggboxplot(x ="Mortality90Day", y = "pathogen_MPM",
+                color = "Mortality90Day", palette =c("magenta4", "black"), 
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "90-day Mortality", ylab = "pathogen mcfDNA - MPMs (log)", legend = "none") + stat_compare_means()
+ggsave("mort90d_covidmcfdna_pathogen.jpeg", width = 4, height = 5)
+
+mort90d_covid_hcfdna <- karius_covid_df_subjectid %>% filter(Karius_status=="Pass")%>%  ggboxplot(x ="Mortality90Day", y = "Karius_human_mpms",
+                color = "Mortality90Day", palette =c("magenta4", "black"), 
+                add = "dotplot",  size = 0.8, yscale = "log10", xlab = "90-day Mortality", ylab = "hcfDNA - MPMs (log)", legend = "none") + stat_compare_means()
+ggsave("mort90d_covid_hcfdna.jpeg", width = 4, height = 5)
+
+
+##### look at tertiles for KM analysis. 
+median(karius_covid_df_subjectid$total_microbial, na.rm = TRUE) # 794
+quantile(karius_covid_df_subjectid$total_microbial, c(0.25, 0.75), na.rm = TRUE) # 75 2244
+quantile(karius_covid_df_subjectid$total_microbial, c(0.33, 0.66), na.rm = TRUE) # 344 1499
+### mutate mpmquartiles
+karius_covid_df_subjectid <- karius_covid_df_subjectid %>% mutate(microbialmpm_tertile = case_when(total_microbial>1499 ~ "high",
+                                                                                                  total_microbial<1499 & total_microbial>344 ~ "middle", 
+                                                                                                  total_microbial<344 ~ "low" ))
+table(karius_covid_df_subjectid$microbialmpm_tertile)
+
+karius_covid_df_subjectid$microbialmpm_tertile <-ordered(karius_covid_df_subjectid$microbialmpm_tertile, levels= c("high", "middle", "low"))
+
+survival_fit_bygroup90 <- survfit(Surv(survival_time90_fromICUAdmission, survival_status90)~microbialmpm_tertile, data=karius_covid_df_subjectid)
+summary(survival_fit_bygroup90)
+ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "Kaplan-Meier Curve within 90 days") 
+#### significant when comparing highest against all other. 
+
+survMcfDNAtertiles <-  ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "90 day survival by mcfDNA tertiles", legend.labs=c("High",  "Middle", "Low/Undetectable"), palette = c("#663300", "#FF9966", "#00FF66"), risk.table = FALSE, legend.title = "mcfDNA tertiles:", font.legend = c(8, "bold", "black"), font.title = c(16, "bold", "black")) 
+ggsave("survMcfDNAtertiles.jpeg", width = 6, height = 5)
+
+#### define high vs. other
+karius_covid_df_subjectid <- karius_covid_df_subjectid %>% mutate(microbialmpmHighTertile = case_when(microbialmpm_tertile=="high" ~ "yes", microbialmpm_tertile != "high" ~"no"))
+                                           
+survival_fit_bygroup90 <- survfit(Surv(survival_time90_fromICUAdmission, survival_status90)~microbialmpmHighTertile, data=karius_covid_df_subjectid)
+summary(survival_fit_bygroup90)
+ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "Kaplan-Meier Curve within 90 days") 
+
+median(karius_covid_df_subjectid$pathogen_MPM, na.rm = TRUE) # 1
+quantile(karius_covid_df_subjectid$pathogen_MPM, c(0.25, 0.75), na.rm = TRUE) 
+quantile(karius_covid_df_subjectid$pathogen_MPM, c(0.33, 0.66), na.rm = TRUE) # 1.000 974
+
+
+## define high pathogen mpm vs. not
+karius_covid_df_subjectid <- karius_covid_df_subjectid %>% mutate(highpathogenMPM = case_when(pathogen_MPM>974 ~ "high",
+                                                                                                  pathogen_MPM<974 ~"low"     ))
+
+   survival_fit_bygroup90 <- survfit(Surv(survival_time90_fromICUAdmission, survival_status90)~highpathogenMPM, data=karius_covid_df_subjectid)
+summary(survival_fit_bygroup90)
+ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "Kaplan-Meier Curve within 90 days")  
+
+
+
+#### hcfDNA survival
+##### look at tertiles for KM analysis. 
+
+median(karius_covid_df_subjectid$Karius_human_mpms, na.rm = TRUE) # 557
+quantile(karius_covid_df_subjectid$Karius_human_mpms, c(0.33, 0.66), na.rm = TRUE) # 255 937
+
+karius_covid_df_subjectid <- karius_covid_df_subjectid %>% mutate(human_mpm_tertile = case_when(Karius_human_mpms>937 ~ "high",
+                                                                                                  Karius_human_mpms<937 & Karius_human_mpms>255 ~ "middle", 
+                                                                                                  Karius_human_mpms<255 ~ "low"))
+
+table(karius_covid_df_subjectid$human_mpm_tertile)
+
+survival_fit_bygroup90 <- survfit(Surv(survival_time90_fromICUAdmission, survival_status90)~human_mpm_tertile , data=karius_covid_df_subjectid)
+summary(survival_fit_bygroup90)
+ggsurvplot(survival_fit_bygroup90, pval=TRUE,   title = "Kaplan-Meier Curve within 90 days") 
+
+
+surv_hcfDNAtertiles <-  ggsurvplot(survival_fit_bygroup90, pval=TRUE, title = "90 day survival by hcfDNA tertiles", legend.labs=c("High",  "Middle", "Low"), palette = c("#663300", "#FF9966", "#00FF66"), risk.table = FALSE, legend.title = "hcfDNA tertiles:", font.legend = c(8, "bold", "black"), font.title = c(16, "bold", "black")) 
+ggsave("surv_hcfDNAtertiles.jpeg", width = 6, height = 5)
+
+
+######### Longitudinal sample analysis
+karius_covid_df_traj <- filter(karius_covid_df,Visit_Day<11 )
+#mcfdna
+trajectory_McfDNA_survivors <- karius_covid_df_traj %>% ggplot(aes(x = as.factor(Visit_Day), y = log(total_microbial), fill =as.factor(Mortality90Day))) + 
+   geom_boxplot(width = 0.5, outlier.size = 0.2, notch= FALSE, alpha=0.6)  + 
+ geom_point(position = position_jitterdodge(dodge.width = 0.1), size = 2, aes(shape =as.factor(Mortality90Day))) +     
+  labs(y = "total mcfDNA MPMs (log)", x = "Followup") + 
+      theme_pubr() +
+  scale_fill_manual(values=c("1"="black", "0" = "magenta4")) + 
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none", axis.text.x = element_text(colour = "black", size = 12, face = "bold" )) +
+  stat_summary(fun.y= median, geom="line", aes(group=as.factor(Mortality90Day)), position = position_dodge(0.8), color = c("#8A8A8A"), linetype = 2) 
+ggsave("trajectory_McfDNA_survivors.jpeg", width = 6, height = 5)
+
+trajectory_hcfDNA_survivors <- karius_covid_df_traj %>% ggplot(aes(x = as.factor(Visit_Day), y = log(Karius_human_mpms), fill =as.factor(Mortality90Day))) + 
+   geom_boxplot(width = 0.5, outlier.size = 0.2, notch= FALSE, alpha=0.6)  + 
+ geom_point(position = position_jitterdodge(dodge.width = 0.1), size = 2, aes(shape =as.factor(Mortality90Day))) +     
+  labs(y = "hcfDNA MPMs (log)", x = "Followup") + 
+      theme_pubr() +
+  scale_fill_manual(values=c("1"="black", "0" = "magenta4")) + 
+  theme(plot.title = element_text(hjust = 0.5), legend.position = "none", axis.text.x = element_text(colour = "black", size = 12, face = "bold" )) +
+  stat_summary(fun.y= median, geom="line", aes(group=as.factor(Mortality90Day)), position = position_dodge(0.8), color = c("#8A8A8A"), linetype = 2) 
+ggsave("trajectory_hcfDNA_survivors.jpeg", width = 6, height = 5)
+
+TrajectoriesCfDNAFigSurvivors <-ggarrange(trajectory_hcfDNA_survivors, trajectory_McfDNA_survivors , ncol = 1, nrow = 2)
+ggsave("TrajectoriesCfDNAFigSurvivors.jpeg", width = 6, height = 10)
+
+
+
+```
+
